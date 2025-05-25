@@ -82,60 +82,65 @@ const predict = async (req, res) => {
   try {
     // 1. Authentication Check
     const userId = req.user?.userId;
-    console.log('[2] Authenticated userId:', userId);
     if (!userId) {
-      console.error('[2A] Authentication failed - no userId');
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
     // 2. User Lookup
-    console.log('[3] Fetching user from database...');
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, email: true },
     });
-    console.log('[4] User lookup result:', JSON.stringify(user, null, 2));
 
     if (!user || !user.name || !user.email) {
-      console.error('[4A] User data incomplete:', { hasName: !!user?.name, hasEmail: !!user?.email });
       return res.status(404).json({ error: 'User not found' });
     }
 
     // 3. Patient Data Processing
-    console.log('[5] Parsing patient data...');
     let patientData = parsePatientData(req.body);
-    console.log('[6] Parsed patient data:', JSON.stringify(patientData, null, 2));
-    
     patientData.userId = userId;
     patientData.name = user.name;
 
     // 4. Python Service Call
-    console.log('[7] Calling Python prediction service...');
     const predictionResponse = await appService.callPythonService(patientData);
-    console.log('[8] Python service response:', JSON.stringify(predictionResponse, null, 2));
 
     if (!predictionResponse || typeof predictionResponse !== 'object') {
-      console.error('[8A] Invalid prediction response:', typeof predictionResponse);
       throw new Error('Invalid response from prediction service');
     }
 
-    // 5. Model Evaluation
-    console.log('[9] Evaluating models...');
+    // 5. Model Evaluation (Key Fix - Case-Insensitive Field Access)
     let bestModel = Object.keys(predictionResponse)[0];
-    let highestPrecentage = predictionResponse[bestModel].precentage;
-    let finalPrediction = predictionResponse[bestModel].prediction;
+    let highestPrecentage = (
+      predictionResponse[bestModel].precentage ??  // Try exact match first
+      predictionResponse[bestModel].percentage ?? // Fallback to correct spelling
+      0
+    );
+
+    let finalPrediction = (
+      predictionResponse[bestModel].prediction ??  // Try exact match first
+      predictionResponse[bestModel].Prediction ?? // Fallback to capitalized
+      false
+    );
 
     Object.keys(predictionResponse).forEach(model => {
-      if (predictionResponse[model].precentage > highestPrecentage) {
+      const currentPrecentage = (
+        predictionResponse[model].precentage ?? 
+        predictionResponse[model].percentage ?? 
+        0
+      );
+      
+      if (currentPrecentage > highestPrecentage) {
         bestModel = model;
-        highestPrecentage = predictionResponse[model].precentage;
-        finalPrediction = predictionResponse[model].prediction;
+        highestPrecentage = currentPrecentage;
+        finalPrediction = (
+          predictionResponse[model].prediction ?? 
+          predictionResponse[model].Prediction ?? 
+          false
+        );
       }
     });
-    console.log('[10] Selected model:', bestModel, 'Percentage:', highestPrecentage);
 
-    // 6. Risk Assessment
-    console.log('[11] Calculating risk level...');
+    // 6. Risk Assessment (Uses original precentage name)
     const { riskLevel, recommendation } = getRiskLevel(highestPrecentage);
     patientData.prediction = finalPrediction;
     patientData.precentage = highestPrecentage;
@@ -143,47 +148,33 @@ const predict = async (req, res) => {
     patientData.recommendation = recommendation;
 
     // 7. Database Operations
-    console.log('[12] Saving patient to database...');
     const patient = await appService.createPatient(patientData);
-    console.log('[13] Patient created:', JSON.stringify(patient, null, 2));
 
-    console.log('[14] Creating notification...');
-    const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
-    const notification = await prisma.notification.create({
+    // 8. Notification & Email
+    const notificationMessage = `Patient ${patient.name} has ${patient.riskLevel} risk. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
+    await prisma.notification.create({
       data: {
         patientId: patient.Id,
         message: notificationMessage,
         isRead: false,
       },
     });
-    console.log('[15] Notification created:', JSON.stringify(notification, null, 2));
 
-    // 8. Email Notification
-    console.log('[16] Sending email notification...');
     await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
-    console.log('[17] Email sent successfully');
 
-    // Final Response
-    console.log('[18] Sending successful response');
+    // Final Response (Maintains original field names)
     return res.status(200).json({
       prediction: patient.prediction,
-      precentage: patient.precentage,
+      precentage: patient.precentage, // Kept as precentage
       riskLevel: patient.riskLevel,
       recommendation: patient.recommendation,
-      notification,
     });
 
   } catch (error) {
-    console.error('[ERROR] Full error details:', {
-      message: error.message,
-      stack: error.stack,
-      timestamp: new Date().toISOString(),
-      requestBody: req.body,
-    });
-    
+    console.error('Prediction error:', error);
     return res.status(500).json({ 
-      error: 'Prediction process failed',
-      details: process.env.NODE_ENV === 'development' ? error.message : null,
+      error: 'Prediction failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 };
