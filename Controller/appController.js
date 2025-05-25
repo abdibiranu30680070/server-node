@@ -1,286 +1,224 @@
-const { PrismaClient } = require('@prisma/client');
-const nodemailer = require('nodemailer');
-const dotenv = require('dotenv');  // Import dotenv
-const appService = require('../Service/appService');
+const { PrismaClient } = require("@prisma/client");
+const nodemailer = require("nodemailer");
+const dotenv = require("dotenv");
+const appService = require("../services/appService");
 
-// Load environment variables from the .env file
+// Initialize services
 dotenv.config();
-
 const prisma = new PrismaClient();
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
-// Function to validate and parse patient data
-const parsePatientData = (patientData) => {
+/**
+ * Parses and validates patient data
+ */
+function parsePatientData(patientData) {
   const fieldsToValidate = [
-    'age', 'bmi', 'insulin', 'Pregnancies', 'Glucose',
-    'BloodPressure', 'SkinThickness', 'DiabetesPedigreeFunction', 'name'
+    "age", "bmi", "insulin", "Pregnancies", "Glucose",
+    "BloodPressure", "SkinThickness", "DiabetesPedigreeFunction"
   ];
 
   for (let field of fieldsToValidate) {
-    if ((patientData[field] === undefined || isNaN(patientData[field])) && field !== 'name') {
+    if ((patientData[field] === undefined || isNaN(patientData[field]))) {
       throw new Error(`Invalid or missing value for field: ${field}`);
     }
   }
 
   return {
-    name: patientData.name || 'Unknown',
-    Age: parseInt(patientData.age, 10) || 0,
-    BMI: parseFloat(patientData.bmi) || 0.0,
-    Insulin: parseFloat(patientData.insulin) || 0.0,
-    Pregnancies: parseInt(patientData.Pregnancies, 10) || 0,
-    Glucose: parseFloat(patientData.Glucose) || 0.0,
-    BloodPressure: parseFloat(patientData.BloodPressure) || 0.0,
-    SkinThickness: parseFloat(patientData.SkinThickness) || 0.0,
-    DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction) || 0.0,
+    name: patientData.name || "Unknown",
+    Age: parseInt(patientData.age, 10),
+    BMI: parseFloat(patientData.bmi),
+    Insulin: parseFloat(patientData.insulin),
+    Pregnancies: parseInt(patientData.Pregnancies, 10),
+    Glucose: parseFloat(patientData.Glucose),
+    BloodPressure: parseFloat(patientData.BloodPressure),
+    SkinThickness: parseFloat(patientData.SkinThickness),
+    DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction),
     prediction: false,
-    precentage: 0.0, // Fixed field name
+    precentage: 0.0,
     userId: patientData.userId,
   };
-};
+}
 
-// Function to determine risk level and recommendation
-const getRiskLevel = (precentage) => {
+/**
+ * Determines risk level based on percentage
+ */
+function getRiskLevel(precentage) {
   if (precentage < 40) {
-    return { riskLevel: 'Low', recommendation: 'Maintain a healthy lifestyle and regular checkups.' };
+    return { 
+      riskLevel: "Low", 
+      recommendation: "Maintain a healthy lifestyle and regular checkups." 
+    };
   } else if (precentage < 70) {
-    return { riskLevel: 'Moderate', recommendation: 'Monitor health regularly and consider lifestyle improvements like diet and exercise.' };
+    return { 
+      riskLevel: "Moderate", 
+      recommendation: "Monitor health regularly and consider lifestyle improvements." 
+    };
   } else if (precentage < 90) {
-    return { riskLevel: 'High', recommendation: 'Consult a doctor and undergo further medical checkups.' };
-  } else {
-    return { riskLevel: 'Critical', recommendation: 'Immediate medical consultation is required.' };
+    return { 
+      riskLevel: "High", 
+      recommendation: "Consult a doctor and undergo further medical checkups." 
+    };
   }
-};
-
-// Create a Nodemailer transporter using environment variables
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER, // Fetch email from .env
-    pass: process.env.EMAIL_PASS, // Fetch password from .env
-  },
-});
-
-// Function to send email
-const sendEmailNotification = async (userEmail, patientName, riskLevel, prediction) => {
-  const mailOptions = {
-    from: process.env.EMAIL_USER, // Use the email from the .env file
-    to: userEmail,
-    subject: `Patient Prediction and Risk Level: ${patientName}`,
-    text: `Hello,\n\nThis is an update for your patient ${patientName}.\n\nRisk Level: ${riskLevel}\nPrediction: ${prediction ? 'Diabetic' : 'Not Diabetic'}\n\nBest regards,\nYour Health Platform`,
+  return { 
+    riskLevel: "Critical", 
+    recommendation: "Immediate medical consultation is required." 
   };
+}
 
+/**
+ * Sends email notification
+ */
+async function sendEmailNotification(userEmail, patientName, riskLevel, prediction) {
   try {
-    await transporter.sendMail(mailOptions);
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: userEmail,
+      subject: `Patient Prediction: ${patientName}`,
+      text: `Patient ${patientName}\nRisk Level: ${riskLevel}\nPrediction: ${prediction ? "Diabetic" : "Not Diabetic"}`,
+    });
   } catch (error) {
-    console.error('Error sending email:', error);
+    console.error("Email sending failed:", error);
   }
-};
+}
 
-// 🟢 Updated Predict Function with Email Notification Logic
-const predict = async (req, res) => {
-  console.log('[1] Starting prediction process...');
-  
+/**
+ * Main prediction controller
+ */
+async function predict(req, res) {
   try {
-    // 1. Authentication Check
+    // Authentication check
     const userId = req.user?.userId;
     if (!userId) {
-      return res.status(401).json({ error: 'User not authenticated' });
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // 2. User Lookup
+    // Get user details
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, email: true },
     });
-
-    if (!user || !user.name || !user.email) {
-      return res.status(404).json({ error: 'User not found' });
+    if (!user?.email) {
+      return res.status(404).json({ error: "User not found" });
     }
 
-    // 3. Patient Data Processing
+    // Process and validate patient data
     let patientData = parsePatientData(req.body);
     patientData.userId = userId;
     patientData.name = user.name;
 
-    // 4. Python Service Call
+    // Get prediction from Python service
     const predictionResponse = await appService.callPythonService(patientData);
-
-    if (!predictionResponse || typeof predictionResponse !== 'object') {
-      throw new Error('Invalid response from prediction service');
+    if (!predictionResponse) {
+      throw new Error("Invalid prediction response");
     }
 
-    // 5. Model Evaluation (Key Fix - Case-Insensitive Field Access)
+    // Evaluate models
     let bestModel = Object.keys(predictionResponse)[0];
-    let highestPrecentage = (
-      predictionResponse[bestModel].precentage ??  // Try exact match first
-      predictionResponse[bestModel].percentage ?? // Fallback to correct spelling
-      0
-    );
-
-    let finalPrediction = (
-      predictionResponse[bestModel].prediction ??  // Try exact match first
-      predictionResponse[bestModel].Prediction ?? // Fallback to capitalized
-      false
-    );
+    let highestPrecentage = predictionResponse[bestModel].precentage ?? 
+                          predictionResponse[bestModel].percentage ?? 0;
+    let finalPrediction = predictionResponse[bestModel].prediction ?? 
+                         predictionResponse[bestModel].Prediction ?? false;
 
     Object.keys(predictionResponse).forEach(model => {
-      const currentPrecentage = (
-        predictionResponse[model].precentage ?? 
-        predictionResponse[model].percentage ?? 
-        0
-      );
-      
-      if (currentPrecentage > highestPrecentage) {
+      const current = predictionResponse[model].precentage ?? 
+                     predictionResponse[model].percentage;
+      if (current > highestPrecentage) {
         bestModel = model;
-        highestPrecentage = currentPrecentage;
-        finalPrediction = (
-          predictionResponse[model].prediction ?? 
-          predictionResponse[model].Prediction ?? 
-          false
-        );
+        highestPrecentage = current;
+        finalPrediction = predictionResponse[model].prediction ?? 
+                         predictionResponse[model].Prediction;
       }
     });
 
-    // 6. Risk Assessment (Uses original precentage name)
+    // Prepare final data
     const { riskLevel, recommendation } = getRiskLevel(highestPrecentage);
     patientData.prediction = finalPrediction;
     patientData.precentage = highestPrecentage;
     patientData.riskLevel = riskLevel;
     patientData.recommendation = recommendation;
 
-    // 7. Database Operations
+    // Save to database
     const patient = await appService.createPatient(patientData);
 
-    // 8. Notification & Email
-    const notificationMessage = `Patient ${patient.name} has ${patient.riskLevel} risk. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
+    // Create notification
     await prisma.notification.create({
       data: {
         patientId: patient.Id,
-        message: notificationMessage,
+        message: `Patient ${patient.name} has ${riskLevel} risk`,
         isRead: false,
       },
     });
 
-    await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
+    // Send email
+    await sendEmailNotification(user.email, patient.name, riskLevel, finalPrediction);
 
-    // Final Response (Maintains original field names)
     return res.status(200).json({
-      prediction: patient.prediction,
-      precentage: patient.precentage, // Kept as precentage
-      riskLevel: patient.riskLevel,
-      recommendation: patient.recommendation,
+      prediction: finalPrediction,
+      precentage: highestPrecentage,
+      riskLevel,
+      recommendation,
     });
 
   } catch (error) {
-    console.error('Prediction error:', error);
+    console.error("Prediction failed:", error.message);
     return res.status(500).json({ 
-      error: 'Prediction failed',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: "Prediction failed",
+      details: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
-};
+}
 
-
-
-
-// 🟢 Fetch all patients for the authenticated user
-
-const getAllPatients = async (req, res) => {
-
+/**
+ * Get all patients for a user
+ */
+async function getAllPatients(req, res) {
   try {
-
     const userId = req.user?.userId;
-
     if (!userId) {
-
-      return res.status(401).json({ error: 'User not authenticated' });
-
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-
-    const patients = await prisma.patient.findMany({
-
-      where: { userId: userId },
-
-    });
-
-
-    if (!patients || patients.length === 0) {
-
-      return res.status(404).json({ message: 'No patients found for this user.' });
-
-    }
-
-
+    const patients = await appService.getAllPatients(userId);
     return res.status(200).json(patients);
-
   } catch (error) {
-
-    console.error('Error fetching patients:', error.message);
-
-    return res.status(500).json({ error: error.message });
-
+    console.error("Failed to fetch patients:", error.message);
+    return res.status(500).json({ error: "Failed to fetch patients" });
   }
+}
 
-};
-
-
-// 🟢 Fetch details of a specific patient
-
-const getPatientDetails = async (req, res) => {
-
+/**
+ * Get details of a specific patient
+ */
+async function getPatientDetails(req, res) {
   try {
-
-    // const userId = req.user?.userId;
-
-    // if (!userId) {
-
-    //   return res.status(401).json({ error: 'User not authenticated' });
-
-    // }
-
-
     const patientId = parseInt(req.params.id, 10);
-
     if (isNaN(patientId)) {
-
-      return res.status(400).json({ error: 'Invalid patient ID' });
-
+      return res.status(400).json({ error: "Invalid patient ID" });
     }
-
-
-    // Fetch the specific patient's details (only if the patient belongs to the authenticated user)
 
     const patient = await prisma.patient.findUnique({
-
-      where: {
-
-        Id: patientId,
-
-       // userId: userId, // Ensures the user only sees their own patients
-
-      },
-
+      where: { Id: patientId },
     });
 
-
     if (!patient) {
-
-      return res.status(404).json({ error: 'Patient not found or does not belong to the user.' });
-
+      return res.status(404).json({ error: "Patient not found" });
     }
 
-
     return res.status(200).json(patient);
-
   } catch (error) {
-
-    console.error('Error fetching patient details:', error);
-
-    return res.status(500).json({ error: 'Internal server error' });
-
+    console.error("Failed to fetch patient details:", error.message);
+    return res.status(500).json({ error: "Failed to fetch patient details" });
   }
+}
 
+module.exports = {
+  predict,
+  getAllPatients,
+  getPatientDetails,
 };
-
-
-module.exports = { predict, getAllPatients, getPatientDetails };
