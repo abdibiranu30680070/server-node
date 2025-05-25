@@ -92,17 +92,37 @@ async function callPythonService(patientData) {
   }
 
   try {
-    console.log("📤 Sending data to Python API:", patientData);
+    console.log("📤 Sending data to Python API:", JSON.stringify(patientData, null, 2));
 
     const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 10000 // 10 seconds timeout
     });
 
-    console.log("✅ Received response from Python API:", response.data);
+    if (!response.data) {
+      throw new Error("Python service returned empty response");
+    }
+
+    console.log("✅ Received response from Python API:", JSON.stringify(response.data, null, 2));
     return response.data;
   } catch (error) {
-    console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
-    throw new Error("Failed to get a response from Python service.");
+    console.error("❌ Error communicating with Python API:");
+    console.error("Error message:", error.message);
+    
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      console.error("Status code:", error.response.status);
+      console.error("Response data:", error.response.data);
+      console.error("Response headers:", error.response.headers);
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error("No response received. Request:", error.request);
+    } else {
+      // Something happened in setting up the request
+      console.error("Request setup error:", error.message);
+    }
+    
+    throw new Error(`Failed to get a response from Python service: ${error.message}`);
   }
 }
 
