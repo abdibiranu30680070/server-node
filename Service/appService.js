@@ -1,4 +1,4 @@
-onst { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("@prisma/client");
 const axios = require("axios");
 const axiosRetry = require("axios-retry");
 const { v4: uuidv4 } = require("uuid");
