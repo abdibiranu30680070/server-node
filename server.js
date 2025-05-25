@@ -19,12 +19,10 @@ app.use('/', userRouter);
 app.use('/', appRouter); 
 
 // Health check route
-app.get('/', (req, res) => {
-  res.send('Server is running!');
-});
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
 // Server initialization
-const port = process.env.PORT || 4001; // Using environment variable for the port
+const port = process.env.PORT || 10000; // Using environment variable for the port
 app.listen(port, () => {
     console.log(`Server started successfully on port ${port}`);
 });
