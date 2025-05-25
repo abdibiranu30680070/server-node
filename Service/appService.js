@@ -113,44 +113,61 @@ async function createPatient(patientData) {
   }
 }
 
-/**
- * Calls the Python prediction service
- */
+
 async function callPythonService(patientData) {
   const requestId = uuidv4();
   const startTime = Date.now();
 
   try {
-    const requiredFields = [
-      "Pregnancies", "Glucose", "BloodPressure",
-      "SkinThickness", "Insulin", "BMI",
-      "DiabetesPedigreeFunction", "Age"
-    ];
-    validateRequiredFields(patientData, requiredFields);
-
+    // Validate and prepare data exactly as Python service expects
     const payload = {
-      Pregnancies: parseInt(patientData.Pregnancies, 10),
-      Glucose: parseFloat(patientData.Glucose),
-      BloodPressure: parseFloat(patientData.BloodPressure),
-      SkinThickness: parseFloat(patientData.SkinThickness),
-      Insulin: parseFloat(patientData.Insulin),
-      BMI: parseFloat(patientData.BMI),
+      Pregnancies: Math.max(0, parseInt(patientData.Pregnancies, 10)),
+      Glucose: Math.max(0.1, parseFloat(patientData.Glucose)), // Ensures > 0
+      BloodPressure: Math.max(0.1, parseFloat(patientData.BloodPressure)),
+      SkinThickness: Math.max(0, parseFloat(patientData.SkinThickness)),
+      Insulin: Math.max(0, parseFloat(patientData.Insulin)),
+      BMI: Math.max(0.1, parseFloat(patientData.BMI)),
       DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction),
-      Age: parseInt(patientData.Age, 10)
+      Age: Math.max(0, parseInt(patientData.Age, 10))
     };
+
+    console.log(`[${requestId}] Sending to Python service:`, payload);
 
     const response = await axios.post(PYTHON_SERVICE_URL, payload, {
       timeout: REQUEST_TIMEOUT,
-      headers: { "Content-Type": "application/json" },
+      headers: { 'Content-Type': 'application/json' }
     });
 
-    return response.data;
+    // Validate response structure matches Python service
+    if (!response.data || typeof response.data !== 'object') {
+      throw new Error('Invalid response format from Python service');
+    }
+
+    // Convert response to consistent format
+    const formattedResponse = {};
+    for (const [modelName, modelData] of Object.entries(response.data)) {
+      formattedResponse[modelName] = {
+        prediction: Boolean(modelData.prediction),
+        precentage: parseFloat(modelData.precentage || modelData.percentage || 0),
+        riskLevel: modelData.riskLevel,
+        recommendation: modelData.recommendation
+      };
+    }
+
+    return formattedResponse;
+
   } catch (error) {
     console.error(`[${requestId}] Python service call failed:`, {
+      error: error.message,
       status: error.response?.status,
-      message: error.message
+      data: error.response?.data
     });
-    throw new Error("Prediction service unavailable. Please try again later.");
+    
+    // Provide specific error messages
+    if (error.response?.status === 400) {
+      throw new Error('Invalid patient data: ' + (error.response.data?.error || 'Check all required fields'));
+    }
+    throw new Error('Prediction service unavailable. Please try again later.');
   }
 }
 
