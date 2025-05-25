@@ -79,32 +79,48 @@ async function createPatient(patientData) {
     throw new Error("Failed to create patient.");
   }
 }
+const callPythonService = async (patientData) => {
+  console.log('Sending to Python service:', {
+    data: patientData,
+    url: 'https://python-service-1.onrender.com/predict'
+  });
 
+  try {
+    const response = await axios.post(
+      'https://python-service-1.onrender.com/predict',
+      patientData,
+      {
+        timeout: 10000, // 10 second timeout
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.PYTHON_SERVICE_KEY}` // Add if needed
+        }
+      }
+    );
+
+    console.log('Python service response:', response.data);
+    return response.data;
+
+  } catch (error) {
+    console.error('Python Service Error:', {
+      code: error.code,
+      message: error.message,
+      response: error.response?.data,
+      request: {
+        url: error.config?.url,
+        data: error.config?.data
+      }
+    });
+    throw new Error('Prediction service unavailable. Please try again later.');
+  }
+};
 
 /**
  * Calls the Python Flask API to predict diabetes.
  * @param {Object} patientData - The patient's health data.
  * @returns {Promise<Object>} - The prediction result from the Flask API.
  */
-async function callPythonService(patientData) {
-  if (!patientData) {
-    throw new Error("Patient data is required.");
-  }
 
-  try {
-    console.log("📤 Sending data to Python API:", patientData);
-
-    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
-      headers: { 'Content-Type': 'application/json' }
-    });
-
-    console.log("✅ Received response from Python API:", response.data);
-    return response.data;
-  } catch (error) {
-    console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
-    throw new Error("Failed to get a response from Python service.");
-  }
-}
 
 module.exports = {
   createUser,
