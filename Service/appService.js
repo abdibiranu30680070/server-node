@@ -1,148 +1,196 @@
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
+
+// Configure axios retry globally
+axiosRetry(axios, {
+  retries: 3,
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (error) => {
+    return axiosRetry.isNetworkError(error) || 
+           error.response?.status >= 500 ||
+           error.code === 'ECONNABORTED';
+  }
+});
 
 /**
- * Creates a new user in the database.
- * @param {string} email - User's email.
- * @param {string} name - User's name.
- * @param {string} password - Hashed password.
- * @returns {Promise<Object>} - The created user record.
+ * Validates required fields in an object
+ * @param {Object} data - The object to validate
+ * @param {Array} requiredFields - Array of required field names
+ * @throws {Error} If any required field is missing
  */
-async function createUser(email, name, password) {
-  if (!email || !name || !password) {
-    throw new Error("Email, name, and password are required.");
-  }
-
-  try {
-    return await prisma.user.create({
-      data: { email, name, password },
-    });
-  } catch (error) {
-    console.error("❌ Error creating user:", error.message);
-    throw new Error("Failed to create user.");
+function validateRequiredFields(data, requiredFields) {
+  const missingFields = requiredFields.filter(field => !data[field] && data[field] !== 0);
+  if (missingFields.length > 0) {
+    throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
   }
 }
 
 /**
- * Finds a user by email.
- * @param {string} email - User's email.
- * @returns {Promise<Object|null>} - User record or null if not found.
+ * Creates a new user in the database
+ * @param {string} email - User's email
+ * @param {string} name - User's name
+ * @param {string} password - Hashed password
+ * @returns {Promise<Object>} The created user record
+ * @throws {Error} If creation fails
+ */
+async function createUser(email, name, password) {
+  try {
+    validateRequiredFields({ email, name, password }, ['email', 'name', 'password']);
+
+    return await prisma.user.create({
+      data: { 
+        email, 
+        name, 
+        password 
+      },
+    });
+  } catch (error) {
+    console.error("Error creating user:", {
+      error: error.message,
+      stack: error.stack,
+      input: { email, name }
+    });
+    
+    if (error.code === 'P2002') {
+      throw new Error("Email already exists");
+    }
+    throw new Error("Failed to create user");
+  }
+}
+
+/**
+ * Finds a user by email
+ * @param {string} email - User's email
+ * @returns {Promise<Object|null>} User record or null if not found
+ * @throws {Error} If query fails
  */
 async function findUserByEmail(email) {
   try {
+    if (!email) throw new Error("Email is required");
+
     return await prisma.user.findUnique({
       where: { email },
     });
   } catch (error) {
-    console.error("❌ Error finding user by email:", error.message);
-    throw new Error("Failed to find user.");
+    console.error("Error finding user by email:", {
+      error: error.message,
+      email
+    });
+    throw new Error("Failed to find user");
   }
 }
 
 /**
- * Retrieves all patients from the database.
- * @returns {Promise<Array>} - List of all patients.
+ * Retrieves all patients for a specific user
+ * @param {string} userId - ID of the user
+ * @returns {Promise<Array>} List of patients
+ * @throws {Error} If query fails
  */
-async function getAllPatients() {
+async function getAllPatients(userId) {
   try {
-    return await prisma.patient.findMany();
-  } catch (error) {
-    console.error("❌ Error retrieving patients:", error.message);
-    throw new Error("Failed to fetch patients.");
-  }
-}
+    if (!userId) throw new Error("User ID is required");
 
-/**
- * Creates a new patient record.
- * @param {Object} patientData - Patient's data.
- * @param {string} userId - ID of the user associated with this patient.
- * @returns {Promise<Object>} - The created patient record.
- */
-async function createPatient(patientData) {
-  console.log("Patient Data:", patientData);
-  
-  if (!patientData || !patientData.userId) {
-    console.error("❌ Missing patient data or user ID.");
-    throw new Error("Patient data and userId are required.");
-  }
-
-  try {
-    return await prisma.patient.create({
-      data: {
-        ...patientData, // Spread patient data
-        userId: patientData.userId, // Ensure userId is passed correctly
-      },
+    return await prisma.patient.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
     });
   } catch (error) {
-    console.error("❌ Error creating patient:", error.message);
-    throw new Error("Failed to create patient.");
+    console.error("Error retrieving patients:", {
+      error: error.message,
+      userId
+    });
+    throw new Error("Failed to fetch patients");
   }
 }
-async function callPythonService(patientData) {
-  // Validate input
-  if (!patientData) {
-    throw new Error("Patient data is required.");
-  }
 
+/**
+ * Creates a new patient record
+ * @param {Object} patientData - Patient's data
+ * @returns {Promise<Object>} The created patient record
+ * @throws {Error} If creation fails
+ */
+async function createPatient(patientData) {
   try {
-    // Prepare data in exact format Python service expects
-    const formattedData = {
-      Pregnancies: parseInt(patientData.Pregnancies, 10) || 0,
-      Glucose: parseFloat(patientData.Glucose) || 0,
-      BloodPressure: parseFloat(patientData.BloodPressure) || 0,
-      SkinThickness: parseFloat(patientData.SkinThickness) || 0,
-      Insulin: parseFloat(patientData.Insulin) || 0,
-      BMI: parseFloat(patientData.BMI) || 0,
-      DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction) || 0,
-      Age: parseInt(patientData.Age, 10) || 0
+    validateRequiredFields(patientData, ['userId']);
+    
+    console.log("Creating patient with data:", patientData);
+    
+    return await prisma.patient.create({
+      data: patientData
+    });
+  } catch (error) {
+    console.error("Error creating patient:", {
+      error: error.message,
+      stack: error.stack,
+      patientData
+    });
+    
+    if (error.code === 'P2003') {
+      throw new Error("Invalid user reference");
+    }
+    throw new Error("Failed to create patient");
+  }
+}
+
+/**
+ * Calls the Python Flask API to predict diabetes
+ * @param {Object} patientData - The patient's health data
+ * @returns {Promise<Object>} The prediction result
+ * @throws {Error} If prediction fails
+ */
+async function callPythonService(patientData) {
+  try {
+    validateRequiredFields(patientData, [
+      'Pregnancies', 'Glucose', 'BloodPressure', 
+      'SkinThickness', 'Insulin', 'BMI', 
+      'DiabetesPedigreeFunction', 'Age'
+    ]);
+
+    const payload = {
+      Pregnancies: parseInt(patientData.Pregnancies, 10),
+      Glucose: parseFloat(patientData.Glucose),
+      BloodPressure: parseFloat(patientData.BloodPressure),
+      SkinThickness: parseFloat(patientData.SkinThickness),
+      Insulin: parseFloat(patientData.Insulin),
+      BMI: parseFloat(patientData.BMI),
+      DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction),
+      Age: parseInt(patientData.Age, 10)
     };
 
-    console.log("Sending to Python service:", formattedData);
+    console.log("Calling Python service with:", payload);
 
     const response = await axios.post(
       'https://phyton-service-1.onrender.com/predict',
-      formattedData,
+      payload,
       {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 20000 // 20 second timeout
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
       }
     );
 
-    // Process response to match your existing structure
-    const processedResponse = {};
-    for (const [modelName, modelData] of Object.entries(response.data)) {
-      processedResponse[modelName] = {
-        prediction: modelData.prediction,
-        precentage: modelData.precentage, // Maintaining your spelling
-        riskLevel: modelData.riskLevel,
-        recommendation: modelData.recommendation
-      };
-    }
-
-    console.log("Received from Python service:", processedResponse);
-    return processedResponse;
+    console.log("Python service responded with:", response.data);
+    return response.data;
 
   } catch (error) {
     console.error("Python Service Error:", {
       message: error.message,
-      response: error.response?.data,
-      code: error.code
+      code: error.code,
+      status: error.response?.status,
+      data: error.response?.data,
+      stack: error.stack
     });
-    
-    throw new Error(
-      error.response?.data?.error || 
-      'Prediction service unavailable. Please try again later.'
-    );
+
+    if (error.response) {
+      if (error.response.status === 502) {
+        throw new Error("Prediction service is currently unavailable");
+      }
+      throw new Error(error.response.data?.error || "Prediction failed");
+    }
+    throw new Error("Failed to connect to prediction service");
   }
 }
-
-/**
- * Calls the Python Flask API to predict diabetes.
- * @param {Object} patientData - The patient's health data.
- * @returns {Promise<Object>} - The prediction result from the Flask API.
- */
-
 
 module.exports = {
   createUser,
@@ -150,4 +198,5 @@ module.exports = {
   getAllPatients,
   createPatient,
   callPythonService,
+  validateRequiredFields // Export for testing
 };
