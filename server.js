@@ -15,8 +15,8 @@ const appRouter = require('./Routes/appRouter.js');
 
 // Use routers
 app.use('/admin', adminRouter);
-app.use('/', userRouter); 
-app.use('/', appRouter); 
+app.use('/api/users', userRouter); 
+app.use('/api', appRouter); 
 
 // Health check route
 app.get('/health', (req, res) => res.status(200).send('OK'));
