@@ -94,35 +94,38 @@ async function callPythonService(patientData) {
   try {
     console.log("📤 Sending data to Python API:", JSON.stringify(patientData, null, 2));
 
-    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 10000 // 10 seconds timeout
-    });
+   async function callPythonService(patientData) {
+  if (!patientData) {
+    throw new Error("Patient data is required");
+  }
+
+  try {
+    const response = await axios.post(
+      'https://phyton-service-1.onrender.com/predict',
+      patientData,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 8000 // 8 second timeout
+      }
+    );
 
     if (!response.data) {
-      throw new Error("Python service returned empty response");
+      throw new Error("Received empty response from service");
     }
 
-    console.log("✅ Received response from Python API:", JSON.stringify(response.data, null, 2));
     return response.data;
+    
   } catch (error) {
-    console.error("❌ Error communicating with Python API:");
-    console.error("Error message:", error.message);
-    
     if (error.response) {
-      // The request was made and the server responded with a status code
-      console.error("Status code:", error.response.status);
-      console.error("Response data:", error.response.data);
-      console.error("Response headers:", error.response.headers);
+      // Server responded with error status (4xx/5xx)
+      throw new Error(`Service responded with ${error.response.status}: ${error.response.data?.message || 'No error details'}`);
     } else if (error.request) {
-      // The request was made but no response was received
-      console.error("No response received. Request:", error.request);
+      // No response received
+      throw new Error("Service unavailable - no response received");
     } else {
-      // Something happened in setting up the request
-      console.error("Request setup error:", error.message);
+      // Setup error
+      throw new Error(`Request failed: ${error.message}`);
     }
-    
-    throw new Error(`Failed to get a response from Python service: ${error.message}`);
   }
 }
 
