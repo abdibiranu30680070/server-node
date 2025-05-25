@@ -79,41 +79,63 @@ async function createPatient(patientData) {
     throw new Error("Failed to create patient.");
   }
 }
-const callPythonService = async (patientData) => {
-  console.log('Sending to Python service:', {
-    data: patientData,
-    url: 'https://python-service-1.onrender.com/predict'
-  });
+async function callPythonService(patientData) {
+  // Validate input
+  if (!patientData) {
+    throw new Error("Patient data is required.");
+  }
 
   try {
+    // Prepare data in exact format Python service expects
+    const formattedData = {
+      Pregnancies: parseInt(patientData.Pregnancies, 10) || 0,
+      Glucose: parseFloat(patientData.Glucose) || 0,
+      BloodPressure: parseFloat(patientData.BloodPressure) || 0,
+      SkinThickness: parseFloat(patientData.SkinThickness) || 0,
+      Insulin: parseFloat(patientData.Insulin) || 0,
+      BMI: parseFloat(patientData.BMI) || 0,
+      DiabetesPedigreeFunction: parseFloat(patientData.DiabetesPedigreeFunction) || 0,
+      Age: parseInt(patientData.Age, 10) || 0
+    };
+
+    console.log("Sending to Python service:", formattedData);
+
     const response = await axios.post(
-      'https://python-service-1.onrender.com/predict',
-      patientData,
+      'https://phyton-service-1.onrender.com/predict',
+      formattedData,
       {
-        timeout: 10000, // 10 second timeout
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.PYTHON_SERVICE_KEY}` // Add if needed
-        }
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 20000 // 20 second timeout
       }
     );
 
-    console.log('Python service response:', response.data);
-    return response.data;
+    // Process response to match your existing structure
+    const processedResponse = {};
+    for (const [modelName, modelData] of Object.entries(response.data)) {
+      processedResponse[modelName] = {
+        prediction: modelData.prediction,
+        precentage: modelData.precentage, // Maintaining your spelling
+        riskLevel: modelData.riskLevel,
+        recommendation: modelData.recommendation
+      };
+    }
+
+    console.log("Received from Python service:", processedResponse);
+    return processedResponse;
 
   } catch (error) {
-    console.error('Python Service Error:', {
-      code: error.code,
+    console.error("Python Service Error:", {
       message: error.message,
       response: error.response?.data,
-      request: {
-        url: error.config?.url,
-        data: error.config?.data
-      }
+      code: error.code
     });
-    throw new Error('Prediction service unavailable. Please try again later.');
+    
+    throw new Error(
+      error.response?.data?.error || 
+      'Prediction service unavailable. Please try again later.'
+    );
   }
-};
+}
 
 /**
  * Calls the Python Flask API to predict diabetes.
