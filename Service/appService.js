@@ -94,7 +94,7 @@ async function callPythonService(patientData) {
   try {
     console.log("📤 Sending data to Python API:", patientData);
 
-    const response = await axios.post('http://127.0.0.1:3002/predict', patientData, {
+    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
       headers: { 'Content-Type': 'application/json' }
     });
 
