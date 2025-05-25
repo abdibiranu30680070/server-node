@@ -1,0 +1,81 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+model User {
+  id               String       @id @default(uuid())
+  email            String       @unique
+  name             String
+  password         String
+  role             UserRole     @default(user)
+  resetToken       String?
+  resetTokenExpiry DateTime?
+
+  auditLogs        AuditLog[]
+  patients         Patient[]
+  feedbacks        Feedback[]   // ✅ Added inverse relation to feedback
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String
+  actionType  String
+  details     String?
+  userId      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model Patient {
+  Id                        Int      @id @default(autoincrement())
+  name                      String
+  Age                       Int
+  BMI                       Float
+  Insulin                   Float
+  Pregnancies               Int
+  Glucose                   Float
+  BloodPressure             Float
+  SkinThickness             Float
+  DiabetesPedigreeFunction  Float
+  prediction                Boolean
+  precentage                Float    @default(0.0)
+  riskLevel                 String   @default("Low")
+  recommendation            String?
+  CreatedAt                 DateTime @default(now())
+  UpdatedAt                 DateTime @updatedAt
+  userId                    String
+  user                      User     @relation(fields: [userId], references: [id])
+
+  notifications             Notification[] @relation("PatientNotifications")
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  patientId   Int     
+  message     String
+  date        DateTime @default(now())
+  isRead      Boolean  @default(false)
+
+  patient     Patient  @relation("PatientNotifications", fields: [patientId], references: [Id])
+}
+
+model Feedback {             // ✅ NEW MODEL ADDED
+  id        Int      @id @default(autoincrement())
+  message   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+}
