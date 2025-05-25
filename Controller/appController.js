@@ -77,38 +77,50 @@ const sendEmailNotification = async (userEmail, patientName, riskLevel, predicti
 
 // 🟢 Updated Predict Function with Email Notification Logic
 const predict = async (req, res) => {
+  console.log('[1] Starting prediction process...');
+  
   try {
+    // 1. Authentication Check
     const userId = req.user?.userId;
+    console.log('[2] Authenticated userId:', userId);
     if (!userId) {
+      console.error('[2A] Authentication failed - no userId');
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    // Fetch user's name and email from the database
+    // 2. User Lookup
+    console.log('[3] Fetching user from database...');
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true }, // Include email field
+      select: { name: true, email: true },
     });
+    console.log('[4] User lookup result:', JSON.stringify(user, null, 2));
 
     if (!user || !user.name || !user.email) {
+      console.error('[4A] User data incomplete:', { hasName: !!user?.name, hasEmail: !!user?.email });
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const userName = user.name;
-    const userEmail = user.email;
-
-    // Parse and validate the incoming patient data
+    // 3. Patient Data Processing
+    console.log('[5] Parsing patient data...');
     let patientData = parsePatientData(req.body);
+    console.log('[6] Parsed patient data:', JSON.stringify(patientData, null, 2));
+    
     patientData.userId = userId;
-    patientData.name = userName;
+    patientData.name = user.name;
 
-    // Call the Python prediction service
+    // 4. Python Service Call
+    console.log('[7] Calling Python prediction service...');
     const predictionResponse = await appService.callPythonService(patientData);
+    console.log('[8] Python service response:', JSON.stringify(predictionResponse, null, 2));
 
     if (!predictionResponse || typeof predictionResponse !== 'object') {
+      console.error('[8A] Invalid prediction response:', typeof predictionResponse);
       throw new Error('Invalid response from prediction service');
     }
 
-    // Find the best model with the highest percentage
+    // 5. Model Evaluation
+    console.log('[9] Evaluating models...');
     let bestModel = Object.keys(predictionResponse)[0];
     let highestPrecentage = predictionResponse[bestModel].precentage;
     let finalPrediction = predictionResponse[bestModel].prediction;
@@ -120,20 +132,22 @@ const predict = async (req, res) => {
         finalPrediction = predictionResponse[model].prediction;
       }
     });
+    console.log('[10] Selected model:', bestModel, 'Percentage:', highestPrecentage);
 
-    // Assign risk level and recommendation
+    // 6. Risk Assessment
+    console.log('[11] Calculating risk level...');
     const { riskLevel, recommendation } = getRiskLevel(highestPrecentage);
-
-    // Update patient data with results
     patientData.prediction = finalPrediction;
     patientData.precentage = highestPrecentage;
     patientData.riskLevel = riskLevel;
     patientData.recommendation = recommendation;
 
-    // Save the patient data in the database
+    // 7. Database Operations
+    console.log('[12] Saving patient to database...');
     const patient = await appService.createPatient(patientData);
+    console.log('[13] Patient created:', JSON.stringify(patient, null, 2));
 
-    // Add a notification for the patient
+    console.log('[14] Creating notification...');
     const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
     const notification = await prisma.notification.create({
       data: {
@@ -142,24 +156,37 @@ const predict = async (req, res) => {
         isRead: false,
       },
     });
+    console.log('[15] Notification created:', JSON.stringify(notification, null, 2));
 
-    // Send email notification to the user
-    await sendEmailNotification(userEmail, patient.name, patient.riskLevel, patient.prediction);
+    // 8. Email Notification
+    console.log('[16] Sending email notification...');
+    await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
+    console.log('[17] Email sent successfully');
 
-    // Send response with prediction results
+    // Final Response
+    console.log('[18] Sending successful response');
     return res.status(200).json({
       prediction: patient.prediction,
       precentage: patient.precentage,
       riskLevel: patient.riskLevel,
       recommendation: patient.recommendation,
-      notification: notification,  // Include notification data in the response
+      notification,
     });
+
   } catch (error) {
-    console.error('Error in prediction:', error.message);
-    return res.status(500).json({ error: error.message });
+    console.error('[ERROR] Full error details:', {
+      message: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString(),
+      requestBody: req.body,
+    });
+    
+    return res.status(500).json({ 
+      error: 'Prediction process failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : null,
+    });
   }
 };
-
 
 
 
