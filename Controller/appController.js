@@ -78,188 +78,91 @@ const sendEmailNotification = async (userEmail, patientName, riskLevel, predicti
 // 🟢 Updated Predict Function with Email Notification Logic
 const predict = async (req, res) => {
   try {
-    // Validate authentication
-    if (!req.user?.userId) {
-      return res.status(401).json({ 
-        error: 'Authentication required',
-        code: 'AUTH_REQUIRED'
-      });
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    const userId = req.user.userId;
-
-    // Get only the needed user data - fixed query
+    // Fetch user's name and email from the database
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { 
-        id: true,
-        name: true,
-        email: true
-        // Removed isActive since it's not in your model
+      select: { name: true, email: true }, // Include email field
+    });
+
+    if (!user || !user.name || !user.email) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userName = user.name;
+    const userEmail = user.email;
+
+    // Parse and validate the incoming patient data
+    let patientData = parsePatientData(req.body);
+    patientData.userId = userId;
+    patientData.name = userName;
+
+    // Call the Python prediction service
+    const predictionResponse = await appService.callPythonService(patientData);
+
+    if (!predictionResponse || typeof predictionResponse !== 'object') {
+      throw new Error('Invalid response from prediction service');
+    }
+
+    // Find the best model with the highest percentage
+    let bestModel = Object.keys(predictionResponse)[0];
+    let highestPrecentage = predictionResponse[bestModel].precentage;
+    let finalPrediction = predictionResponse[bestModel].prediction;
+
+    Object.keys(predictionResponse).forEach(model => {
+      if (predictionResponse[model].precentage > highestPrecentage) {
+        bestModel = model;
+        highestPrecentage = predictionResponse[model].precentage;
+        finalPrediction = predictionResponse[model].prediction;
       }
     });
 
-    if (!user) {
-      return res.status(403).json({
-        error: 'User not found',
-        code: 'USER_NOT_FOUND'
-      });
-    }
+    // Assign risk level and recommendation
+    const { riskLevel, recommendation } = getRiskLevel(highestPrecentage);
 
-    // Validate and parse patient data
-    let patientData;
-    try {
-      patientData = parsePatientData(req.body);
-      if (!patientData || typeof patientData !== 'object') {
-        throw new Error('Invalid patient data structure');
-      }
-    } catch (parseError) {
-      return res.status(400).json({
-        error: 'Invalid patient data format',
-        details: parseError.message,
-        code: 'INVALID_DATA'
-      });
-    }
+    // Update patient data with results
+    patientData.prediction = finalPrediction;
+    patientData.precentage = highestPrecentage;
+    patientData.riskLevel = riskLevel;
+    patientData.recommendation = recommendation;
 
-    // Add metadata to patient data
-    const enrichedData = {
-      ...patientData,
-      userId,
-      name: user.name,
-      timestamp: new Date().toISOString()
-    };
+    // Save the patient data in the database
+    const patient = await appService.createPatient(patientData);
 
-    // Call prediction service with retry logic
-    let predictionResponse;
-    try {
-      predictionResponse = await retry(
-        () => appService.callPythonService(enrichedData),
-        {
-          retries: 2,
-          minTimeout: 1000,
-          factor: 2
-        }
-      );
-      
-      if (!predictionResponse || Object.keys(predictionResponse).length === 0) {
-        throw new Error('Empty prediction response');
-      }
-    } catch (pyError) {
-      console.error('Prediction service failed after retries:', pyError);
-      return res.status(503).json({
-        error: 'Prediction service unavailable',
-        code: 'SERVICE_UNAVAILABLE',
-        retryAfter: 60 // seconds
-      });
-    }
-
-    // Process prediction results
-    const { bestModel, highestPercentage, finalPrediction } = processPredictionResults(predictionResponse);
-    const { riskLevel, recommendation } = getRiskLevel(highestPercentage);
-
-    // Create database transaction for atomic operations
-    const [patient, notification] = await prisma.$transaction([
-      prisma.patient.create({
-        data: {
-          ...enrichedData,
-          prediction: finalPrediction,
-          confidence: highestPercentage,
-          riskLevel,
-          recommendation,
-          modelUsed: bestModel
-        }
-      }),
-      prisma.notification.create({
-        data: {
-          userId,
-          message: `New prediction for ${user.name}: ${riskLevel} risk`,
-          type: 'PREDICTION_RESULT'
-        }
-      })
-    ]).catch(async (txError) => {
-      console.error('Transaction failed:', txError);
-      throw new Error('Failed to save prediction results');
-    });
-
-    // Async email notification (fire-and-forget)
-    sendEmailNotification({
-      to: user.email,
-      subject: `Prediction Results for ${patient.name}`,
-      template: 'prediction-result',
+    // Add a notification for the patient
+    const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
+    const notification = await prisma.notification.create({
       data: {
-        name: patient.name,
-        prediction: finalPrediction,
-        confidence: highestPercentage,
-        riskLevel,
-        recommendation
-      }
-    }).catch(emailError => {
-      console.error('Email failed silently:', emailError);
+        patientId: patient.Id,
+        message: notificationMessage,
+        isRead: false,
+      },
     });
 
-    // Calculate response time
-    const elapsedTime = process.hrtime(startTime);
-    const responseTimeMs = elapsedTime[0] * 1000 + elapsedTime[1] / 1e6;
+    // Send email notification to the user
+    await sendEmailNotification(userEmail, patient.name, patient.riskLevel, patient.prediction);
 
+    // Send response with prediction results
     return res.status(200).json({
-      success: true,
-      prediction: finalPrediction,
-      confidence: highestPercentage,
-      riskLevel,
-      recommendation,
-      modelUsed: bestModel,
-      responseTime: `${responseTimeMs.toFixed(2)}ms`
+      prediction: patient.prediction,
+      precentage: patient.precentage,
+      riskLevel: patient.riskLevel,
+      recommendation: patient.recommendation,
+      notification: notification,  // Include notification data in the response
     });
-
   } catch (error) {
-    console.error('Prediction pipeline failed:', {
-      error: error.stack || error.message,
-      userId: req.user?.userId,
-      timestamp: new Date().toISOString()
-    });
-
-    return res.status(500).json({
-      error: 'Internal prediction error',
-      code: 'INTERNAL_ERROR',
-      reference: `ERR-${Date.now()}`
-    });
+    console.error('Error in prediction:', error.message);
+    return res.status(500).json({ error: error.message });
   }
 };
 
-// Helper function to process prediction results
-function processPredictionResults(predictionResponse) {
-  let bestModel = Object.keys(predictionResponse)[0];
-  let highestPercentage = predictionResponse[bestModel].percentage;
-  let finalPrediction = predictionResponse[bestModel].prediction;
 
-  for (const [model, data] of Object.entries(predictionResponse)) {
-    if (data.percentage > highestPercentage) {
-      bestModel = model;
-      highestPercentage = data.percentage;
-      finalPrediction = data.prediction;
-    }
-  }
 
-  return { bestModel, highestPercentage, finalPrediction };
-}
 
-// Retry utility function
-function retry(fn, options = { retries: 3, minTimeout: 1000 }) {
-  return new Promise((resolve, reject) => {
-    const attempt = (retryCount) => {
-      fn()
-        .then(resolve)
-        .catch((err) => {
-          if (retryCount >= options.retries) {
-            return reject(err);
-          }
-          const timeout = options.minTimeout * Math.pow(options.factor || 2, retryCount);
-          setTimeout(() => attempt(retryCount + 1), timeout);
-        });
-    };
-    attempt(0);
-  });
-}
 
 // 🟢 Fetch all patients for the authenticated user
 
