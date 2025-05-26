@@ -79,21 +79,57 @@ async function createPatient(patientData) {
     throw new Error("Failed to create patient.");
   }
 }
+import axios from 'axios';
+
+// This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
 const callPythonService = async (patientData) => {
   try {
-    console.log("📤 Sending data to Python API:", patientData);
+    // Format numeric fields explicitly to ensure they are numbers
+    const formattedData = {
+      Pregnancies: Number(patientData.Pregnancies),
+      Glucose: Number(patientData.Glucose),
+      BloodPressure: Number(patientData.BloodPressure),
+      SkinThickness: Number(patientData.SkinThickness),
+      Insulin: Number(patientData.Insulin),
+      BMI: Number(patientData.BMI),
+      DiabetesPedigreeFunction: Number(patientData.DiabetesPedigreeFunction),
+      Age: Number(patientData.Age)
+    };
 
-    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    console.log("📤 Sending data to Python API:", formattedData);
+
+    // POST request to the Flask API endpoint
+    const response = await axios.post(
+      'https://python-service-1.onrender.com/predict',
+      formattedData,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 5000,  // 5 seconds timeout
+      }
+    );
 
     console.log("✅ Received response from Python API:", response.data);
     return response.data;
+
   } catch (error) {
-    console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
+    // Handle errors carefully
+    if (error.response) {
+      // Server responded with status code outside 2xx
+      console.error("❌ Python API responded with error:", error.response.status, error.response.data);
+    } else if (error.request) {
+      // No response received from server
+      console.error("❌ No response received from Python API:", error.request);
+    } else {
+      // Other errors during request setup
+      console.error("❌ Error setting up request to Python API:", error.message);
+    }
+    // Throw an error so calling function knows the request failed
     throw new Error("Failed to get a response from Python service.");
   }
 };
+
+export default callPythonService;
+
 
 
 /**
