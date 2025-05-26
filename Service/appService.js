@@ -81,30 +81,27 @@ async function createPatient(patientData) {
 }
 
 // This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
-const callPythonService = async (patientData) => {
-  try {
-    const response = await axios.post(
-      'https://phyton-service-1.onrender.com/predict',
-      patientData,
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 8000 // 8 second timeout
-      }
-    );
 
-    if (!response.data) {
-      throw new Error("Empty response from prediction service");
-    }
-    return response.data;
-
-  } catch (error) {
-    if (error.code === 'ECONNABORTED') {
-      throw new Error("Prediction service timeout - try again later");
-    }
-    throw new Error(`Prediction service error: ${error.response?.status || 'Service unavailable'}`);
+       
+async function callPythonService(patientData) {
+  if (!patientData) {
+    throw new Error("Patient data is required.");
   }
-};
 
+  try {
+    console.log("📤 Sending data to Python API:", patientData);
+
+    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    console.log("✅ Received response from Python API:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
+    throw new Error("Failed to get a response from Python service.");
+  }
+}
 
 
 /**
