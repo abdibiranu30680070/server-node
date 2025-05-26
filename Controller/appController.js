@@ -78,12 +78,13 @@ const sendEmailNotification = async (userEmail, patientName, riskLevel, predicti
 // 🟢 Updated Predict Function with Email Notification Logic
 const predict = async (req, res) => {
   try {
+    // Check user authentication
     const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    // Fetch user details
+    // Fetch user info from DB
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, email: true },
@@ -93,87 +94,100 @@ const predict = async (req, res) => {
       return res.status(404).json({ error: 'User not found or incomplete data' });
     }
 
-    // Parse and validate patient data
+    // Parse patient data safely
     let patientData;
     try {
       patientData = parsePatientData(req.body);
+      console.log('Parsed patient data:', patientData);
     } catch (parseError) {
-      console.error("Failed to parse patient data:", parseError);
+      console.error('Parsing error:', parseError);
       return res.status(400).json({ error: 'Invalid patient data format' });
     }
 
+    // Add user info to patient data
     patientData.userId = userId;
     patientData.name = user.name;
 
-    console.log("🔎 Patient data before prediction call:", patientData);
-
     // Call Python prediction service
-    const predictionResponse = await appService.callPythonService(patientData);
-    console.log("🛠️ Raw prediction response:", predictionResponse);
-
-    if (!predictionResponse || typeof predictionResponse !== 'object') {
-      throw new Error('Invalid response from prediction service');
+    let predictionResponse;
+    try {
+      predictionResponse = await appService.callPythonService(patientData);
+      console.log('Python prediction response:', predictionResponse);
+    } catch (pyError) {
+      console.error('Python service error:', pyError);
+      return res.status(502).json({ error: 'Prediction service failed' });
     }
 
-    // Validate prediction response structure
-    let bestModel = null;
-    let highestPercentage = -Infinity;
-    let finalPrediction = null;
+    if (
+      !predictionResponse ||
+      typeof predictionResponse !== 'object' ||
+      Object.keys(predictionResponse).length === 0
+    ) {
+      console.error('Invalid or empty prediction response:', predictionResponse);
+      return res.status(500).json({ error: 'Invalid response from prediction service' });
+    }
+
+    // Find best model prediction
+    let bestModel = Object.keys(predictionResponse)[0];
+    let highestPercentage = predictionResponse[bestModel].precentage;
+    let finalPrediction = predictionResponse[bestModel].prediction;
 
     for (const model of Object.keys(predictionResponse)) {
-      const modelData = predictionResponse[model];
-      if (
-        !modelData ||
-        typeof modelData.precentage !== 'number' ||
-        modelData.prediction === undefined
-      ) {
-        throw new Error(`Malformed prediction data from model: ${model}`);
-      }
-
-      if (modelData.precentage > highestPercentage) {
+      if (predictionResponse[model].precentage > highestPercentage) {
         bestModel = model;
-        highestPercentage = modelData.precentage;
-        finalPrediction = modelData.prediction;
+        highestPercentage = predictionResponse[model].precentage;
+        finalPrediction = predictionResponse[model].prediction;
       }
     }
 
-    if (bestModel === null) {
-      throw new Error('No valid prediction models found');
-    }
-
-    // Get risk level and recommendation
+    // Get risk level info
     const { riskLevel, recommendation } = getRiskLevel(highestPercentage);
 
-    // Update patientData with prediction results
+    // Add prediction results to patient data
     patientData.prediction = finalPrediction;
     patientData.precentage = highestPercentage;
     patientData.riskLevel = riskLevel;
     patientData.recommendation = recommendation;
 
-    console.log("📦 Patient data before saving:", patientData);
+    console.log('Patient data before saving:', patientData);
 
-    // Save patient data
-    const patient = await appService.createPatient(patientData);
+    // Save patient data to DB, catch DB errors
+    let patient;
+    try {
+      patient = await appService.createPatient(patientData);
+    } catch (dbError) {
+      console.error('Database error creating patient:', dbError);
+      return res.status(500).json({ error: 'Failed to save patient data' });
+    }
 
     // Create notification
-    const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
-    const notification = await prisma.notification.create({
-      data: {
-        patientId: patient.id,  // Make sure this matches your schema (lowercase 'id')
-        message: notificationMessage,
-        isRead: false,
-      },
-    });
+    const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${
+      patient.prediction ? 'Diabetic' : 'Not Diabetic'
+    }`;
 
-    // Send email notification (non-blocking)
+    let notification;
+    try {
+      notification = await prisma.notification.create({
+        data: {
+          patientId: patient.Id,
+          message: notificationMessage,
+          isRead: false,
+        },
+      });
+    } catch (notifError) {
+      console.error('Notification creation error:', notifError);
+      // Not critical enough to fail whole request
+    }
+
+    // Send email notification
     try {
       await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
     } catch (emailError) {
-      console.error("⚠️ Failed to send email notification:", emailError);
-      // We continue without failing the request
+      console.error('Email sending failed:', emailError);
+      // Not critical enough to fail whole request
     }
 
-    // Send back response
+    // Return success response
     return res.status(200).json({
       prediction: patient.prediction,
       precentage: patient.precentage,
@@ -182,11 +196,8 @@ const predict = async (req, res) => {
       notification,
     });
   } catch (error) {
-    console.error('Full Error Stack:', error.stack || error);
-    console.error('Error message:', error.message);
-    console.error('Request body:', req.body);
-
-    return res.status(500).json({ error: error.message || 'Internal server error' });
+    console.error('Unexpected error in predict:', error.stack || error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
