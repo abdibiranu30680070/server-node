@@ -56,12 +56,9 @@ async function getAllPatients() {
 /**
  * Creates a new patient record.
  * @param {Object} patientData - Patient's data.
- * @param {string} userId - ID of the user associated with this patient.
  * @returns {Promise<Object>} - The created patient record.
  */
 async function createPatient(patientData) {
-  console.log("Patient Data:", patientData);
-  
   if (!patientData || !patientData.userId) {
     console.error("❌ Missing patient data or user ID.");
     throw new Error("Patient data and userId are required.");
@@ -70,8 +67,15 @@ async function createPatient(patientData) {
   try {
     return await prisma.patient.create({
       data: {
-        ...patientData, // Spread patient data
-        userId: patientData.userId, // Ensure userId is passed correctly
+        Pregnancies: Number(patientData.Pregnancies),
+        Glucose: Number(patientData.Glucose),
+        BloodPressure: Number(patientData.BloodPressure),
+        SkinThickness: Number(patientData.SkinThickness),
+        Insulin: Number(patientData.Insulin),
+        BMI: Number(patientData.BMI),
+        DiabetesPedigreeFunction: Number(patientData.DiabetesPedigreeFunction),
+        Age: Number(patientData.Age),
+        userId: patientData.userId,
       },
     });
   } catch (error) {
@@ -80,37 +84,48 @@ async function createPatient(patientData) {
   }
 }
 
-// This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
-
-       
-async function callPythonService(patientData) {
-  if (!patientData) {
-    throw new Error("Patient data is required.");
-  }
-
-  try {
-    console.log("📤 Sending data to Python API:", patientData);
-
-    const response = await axios.post('https://phyton-service-1.onrender.com/predict', patientData, {
-      headers: { 'Content-Type': 'application/json' }
-    });
-
-    console.log("✅ Received response from Python API:", response.data);
-    return response.data;
-  } catch (error) {
-    console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
-    throw new Error("Failed to get a response from Python service.");
-  }
-}
-
-
 /**
  * Calls the Python Flask API to predict diabetes.
  * @param {Object} patientData - The patient's health data.
  * @returns {Promise<Object>} - The prediction result from the Flask API.
  */
-// services/appService.js or wherever callPythonService is defined
+async function callPythonService(patientData) {
+  if (!patientData) {
+    throw new Error("Patient data is required.");
+  }
 
+  const formattedData = {
+    Pregnancies: Number(patientData.Pregnancies),
+    Glucose: Number(patientData.Glucose),
+    BloodPressure: Number(patientData.BloodPressure),
+    SkinThickness: Number(patientData.SkinThickness),
+    Insulin: Number(patientData.Insulin),
+    BMI: Number(patientData.BMI),
+    DiabetesPedigreeFunction: Number(patientData.DiabetesPedigreeFunction),
+    Age: Number(patientData.Age)
+  };
+
+  try {
+    console.log("📤 Sending data to Python API:", formattedData);
+
+    const response = await axios.post('https://python-service-1.onrender.com/predict', formattedData, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 5000
+    });
+
+    console.log("✅ Received response from Python API:", response.data);
+    return response.data;
+  } catch (error) {
+    if (error.response) {
+      console.error("❌ Python API responded with error:", error.response.status, error.response.data);
+    } else if (error.request) {
+      console.error("❌ No response received from Python API:", error.request);
+    } else {
+      console.error("❌ Error setting up request to Python API:", error.message);
+    }
+    throw new Error("Failed to get a response from Python service.");
+  }
+}
 
 module.exports = {
   createUser,
