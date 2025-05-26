@@ -79,7 +79,6 @@ async function createPatient(patientData) {
     throw new Error("Failed to create patient.");
   }
 }
-import axios from 'axios';
 
 // This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
 const callPythonService = async (patientData) => {
