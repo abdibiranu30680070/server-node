@@ -82,13 +82,7 @@ async function createPatient(patientData) {
 
 // This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
 const callPythonService = async (patientData) => {
-  if (!patientData || typeof patientData !== 'object') {
-    throw new Error("Invalid patient data format");
-  }
-
   try {
-    console.log("📤 Sending data to Python API:", JSON.stringify(patientData, null, 2));
-
     const response = await axios.post(
       'https://phyton-service-1.onrender.com/predict',
       patientData,
@@ -99,28 +93,15 @@ const callPythonService = async (patientData) => {
     );
 
     if (!response.data) {
-      throw new Error("Received empty response from Python service");
+      throw new Error("Empty response from prediction service");
     }
-
-    console.log("✅ Received response from Python API:", JSON.stringify(response.data, null, 2));
     return response.data;
 
   } catch (error) {
-    const errorDetails = {
-      message: error.message,
-      status: error.response?.status,
-      code: error.code,
-      url: error.config?.url,
-      data: error.response?.data
-    };
-
-    console.error("❌ Python API Error Details:", JSON.stringify(errorDetails, null, 2));
-    
-    throw new Error(
-      error.response?.data?.message || 
-      error.message || 
-      "Prediction service temporarily unavailable"
-    );
+    if (error.code === 'ECONNABORTED') {
+      throw new Error("Prediction service timeout - try again later");
+    }
+    throw new Error(`Prediction service error: ${error.response?.status || 'Service unavailable'}`);
   }
 };
 
