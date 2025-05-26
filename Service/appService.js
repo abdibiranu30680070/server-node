@@ -86,11 +86,8 @@ async function createPatient(patientData) {
  * @param {Object} patientData - The patient's health data.
  * @returns {Promise<Object>} - The prediction result from the Flask API.
  */
-async function callPythonService(patientData) {
-  if (!patientData) {
-    throw new Error("Patient data is required.");
-  }
-
+// services/appService.js or wherever callPythonService is defined
+const callPythonService = async (patientData) => {
   try {
     console.log("📤 Sending data to Python API:", patientData);
 
@@ -104,7 +101,7 @@ async function callPythonService(patientData) {
     console.error("❌ Error communicating with Python API:", error.response ? error.response.data : error.message);
     throw new Error("Failed to get a response from Python service.");
   }
-}
+};
 
 module.exports = {
   createUser,
