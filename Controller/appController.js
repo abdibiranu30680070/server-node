@@ -131,6 +131,7 @@ const predict = async (req, res) => {
     patientData.recommendation = recommendation;
 
     // Save the patient data in the database
+    console.log("📦 Patient data before saving:", patientData);
     const patient = await appService.createPatient(patientData);
 
     // Add a notification for the patient
