@@ -83,87 +83,109 @@ const predict = async (req, res) => {
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    // Fetch user's name and email from the database
+    // Fetch user details
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true }, // Include email field
+      select: { name: true, email: true },
     });
 
     if (!user || !user.name || !user.email) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'User not found or incomplete data' });
     }
 
-    const userName = user.name;
-    const userEmail = user.email;
+    // Parse and validate patient data
+    let patientData;
+    try {
+      patientData = parsePatientData(req.body);
+    } catch (parseError) {
+      console.error("Failed to parse patient data:", parseError);
+      return res.status(400).json({ error: 'Invalid patient data format' });
+    }
 
-    // Parse and validate the incoming patient data
-    let patientData = parsePatientData(req.body);
     patientData.userId = userId;
-    patientData.name = userName;
+    patientData.name = user.name;
 
-    // Call the Python prediction service
+    console.log("🔎 Patient data before prediction call:", patientData);
+
+    // Call Python prediction service
     const predictionResponse = await appService.callPythonService(patientData);
+    console.log("🛠️ Raw prediction response:", predictionResponse);
 
     if (!predictionResponse || typeof predictionResponse !== 'object') {
       throw new Error('Invalid response from prediction service');
     }
 
-    // Find the best model with the highest percentage
-    let bestModel = Object.keys(predictionResponse)[0];
-    let highestPrecentage = predictionResponse[bestModel].precentage;
-    let finalPrediction = predictionResponse[bestModel].prediction;
+    // Validate prediction response structure
+    let bestModel = null;
+    let highestPercentage = -Infinity;
+    let finalPrediction = null;
 
-    Object.keys(predictionResponse).forEach(model => {
-      if (predictionResponse[model].precentage > highestPrecentage) {
-        bestModel = model;
-        highestPrecentage = predictionResponse[model].precentage;
-        finalPrediction = predictionResponse[model].prediction;
+    for (const model of Object.keys(predictionResponse)) {
+      const modelData = predictionResponse[model];
+      if (
+        !modelData ||
+        typeof modelData.precentage !== 'number' ||
+        modelData.prediction === undefined
+      ) {
+        throw new Error(`Malformed prediction data from model: ${model}`);
       }
-    });
 
-    // Assign risk level and recommendation
-    const { riskLevel, recommendation } = getRiskLevel(highestPrecentage);
+      if (modelData.precentage > highestPercentage) {
+        bestModel = model;
+        highestPercentage = modelData.precentage;
+        finalPrediction = modelData.prediction;
+      }
+    }
 
-    // Update patient data with results
+    if (bestModel === null) {
+      throw new Error('No valid prediction models found');
+    }
+
+    // Get risk level and recommendation
+    const { riskLevel, recommendation } = getRiskLevel(highestPercentage);
+
+    // Update patientData with prediction results
     patientData.prediction = finalPrediction;
-    patientData.precentage = highestPrecentage;
+    patientData.precentage = highestPercentage;
     patientData.riskLevel = riskLevel;
     patientData.recommendation = recommendation;
 
-    // Save the patient data in the database
     console.log("📦 Patient data before saving:", patientData);
+
+    // Save patient data
     const patient = await appService.createPatient(patientData);
 
-    // Add a notification for the patient
+    // Create notification
     const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${patient.prediction ? 'Diabetic' : 'Not Diabetic'}`;
     const notification = await prisma.notification.create({
       data: {
-        patientId: patient.Id,
+        patientId: patient.id,  // Make sure this matches your schema (lowercase 'id')
         message: notificationMessage,
         isRead: false,
       },
     });
 
-    // Send email notification to the user
-    await sendEmailNotification(userEmail, patient.name, patient.riskLevel, patient.prediction);
+    // Send email notification (non-blocking)
+    try {
+      await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
+    } catch (emailError) {
+      console.error("⚠️ Failed to send email notification:", emailError);
+      // We continue without failing the request
+    }
 
-    // Send response with prediction results
+    // Send back response
     return res.status(200).json({
       prediction: patient.prediction,
       precentage: patient.precentage,
       riskLevel: patient.riskLevel,
       recommendation: patient.recommendation,
-      notification: notification,  // Include notification data in the response
+      notification,
     });
   } catch (error) {
-    console.error('Error in prediction:', error.message);
-    return res.status(500).json({ error: error.message });
+    console.error('Error in prediction:', error);
+    return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 };
-
-
-
-
 
 // 🟢 Fetch all patients for the authenticated user
 
