@@ -182,7 +182,10 @@ const predict = async (req, res) => {
       notification,
     });
   } catch (error) {
-    console.error('Error in prediction:', error);
+    console.error('Full Error Stack:', error.stack || error);
+    console.error('Error message:', error.message);
+    console.error('Request body:', req.body);
+
     return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 };
