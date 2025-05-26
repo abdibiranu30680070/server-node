@@ -77,9 +77,6 @@ const sendEmailNotification = async (userEmail, patientName, riskLevel, predicti
 
 // 🟢 Updated Predict Function with Email Notification Logic
 const predict = async (req, res) => {
-  // Start timer for performance monitoring
-  const startTime = process.hrtime();
-  
   try {
     // Validate authentication
     if (!req.user?.userId) {
@@ -91,16 +88,21 @@ const predict = async (req, res) => {
 
     const userId = req.user.userId;
 
-    // Get user data with transaction for consistency
+    // Get only the needed user data - fixed query
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, name: true, email: true, isActive: true }
+      select: { 
+        id: true,
+        name: true,
+        email: true
+        // Removed isActive since it's not in your model
+      }
     });
 
-    if (!user || !user.isActive) {
+    if (!user) {
       return res.status(403).json({
-        error: 'User not found or account inactive',
-        code: 'USER_INACTIVE'
+        error: 'User not found',
+        code: 'USER_NOT_FOUND'
       });
     }
 
