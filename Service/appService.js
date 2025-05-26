@@ -82,52 +82,47 @@ async function createPatient(patientData) {
 
 // This function takes patient data, formats it properly, calls the Python Flask API, and returns the prediction result
 const callPythonService = async (patientData) => {
+  if (!patientData || typeof patientData !== 'object') {
+    throw new Error("Invalid patient data format");
+  }
+
   try {
-    // Format numeric fields explicitly to ensure they are numbers
-    const formattedData = {
-      Pregnancies: Number(patientData.Pregnancies),
-      Glucose: Number(patientData.Glucose),
-      BloodPressure: Number(patientData.BloodPressure),
-      SkinThickness: Number(patientData.SkinThickness),
-      Insulin: Number(patientData.Insulin),
-      BMI: Number(patientData.BMI),
-      DiabetesPedigreeFunction: Number(patientData.DiabetesPedigreeFunction),
-      Age: Number(patientData.Age)
-    };
+    console.log("📤 Sending data to Python API:", JSON.stringify(patientData, null, 2));
 
-    console.log("📤 Sending data to Python API:", formattedData);
-
-    // POST request to the Flask API endpoint
     const response = await axios.post(
-      'https://python-service-1.onrender.com/predict',
-      formattedData,
+      'https://phyton-service-1.onrender.com/predict',
+      patientData,
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 5000,  // 5 seconds timeout
+        timeout: 8000 // 8 second timeout
       }
     );
 
-    console.log("✅ Received response from Python API:", response.data);
+    if (!response.data) {
+      throw new Error("Received empty response from Python service");
+    }
+
+    console.log("✅ Received response from Python API:", JSON.stringify(response.data, null, 2));
     return response.data;
 
   } catch (error) {
-    // Handle errors carefully
-    if (error.response) {
-      // Server responded with status code outside 2xx
-      console.error("❌ Python API responded with error:", error.response.status, error.response.data);
-    } else if (error.request) {
-      // No response received from server
-      console.error("❌ No response received from Python API:", error.request);
-    } else {
-      // Other errors during request setup
-      console.error("❌ Error setting up request to Python API:", error.message);
-    }
-    // Throw an error so calling function knows the request failed
-    throw new Error("Failed to get a response from Python service.");
+    const errorDetails = {
+      message: error.message,
+      status: error.response?.status,
+      code: error.code,
+      url: error.config?.url,
+      data: error.response?.data
+    };
+
+    console.error("❌ Python API Error Details:", JSON.stringify(errorDetails, null, 2));
+    
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      "Prediction service temporarily unavailable"
+    );
   }
 };
-
-export default callPythonService;
 
 
 
