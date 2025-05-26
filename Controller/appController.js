@@ -77,129 +77,187 @@ const sendEmailNotification = async (userEmail, patientName, riskLevel, predicti
 
 // 🟢 Updated Predict Function with Email Notification Logic
 const predict = async (req, res) => {
+  // Start timer for performance monitoring
+  const startTime = process.hrtime();
+  
   try {
-    // Check user authentication
-    const userId = req.user?.userId;
-    if (!userId) {
-      return res.status(401).json({ error: 'User not authenticated' });
+    // Validate authentication
+    if (!req.user?.userId) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED'
+      });
     }
 
-    // Fetch user info from DB
+    const userId = req.user.userId;
+
+    // Get user data with transaction for consistency
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true },
+      select: { id: true, name: true, email: true, isActive: true }
     });
 
-    if (!user || !user.name || !user.email) {
-      return res.status(404).json({ error: 'User not found or incomplete data' });
+    if (!user || !user.isActive) {
+      return res.status(403).json({
+        error: 'User not found or account inactive',
+        code: 'USER_INACTIVE'
+      });
     }
 
-    // Parse patient data safely
+    // Validate and parse patient data
     let patientData;
     try {
       patientData = parsePatientData(req.body);
-      console.log('Parsed patient data:', patientData);
+      if (!patientData || typeof patientData !== 'object') {
+        throw new Error('Invalid patient data structure');
+      }
     } catch (parseError) {
-      console.error('Parsing error:', parseError);
-      return res.status(400).json({ error: 'Invalid patient data format' });
+      return res.status(400).json({
+        error: 'Invalid patient data format',
+        details: parseError.message,
+        code: 'INVALID_DATA'
+      });
     }
 
-    // Add user info to patient data
-    patientData.userId = userId;
-    patientData.name = user.name;
+    // Add metadata to patient data
+    const enrichedData = {
+      ...patientData,
+      userId,
+      name: user.name,
+      timestamp: new Date().toISOString()
+    };
 
-    // Call Python prediction service
+    // Call prediction service with retry logic
     let predictionResponse;
     try {
-      predictionResponse = await appService.callPythonService(patientData);
-      console.log('Python prediction response:', predictionResponse);
-    } catch (pyError) {
-      console.error('Python service error:', pyError);
-      return res.status(502).json({ error: 'Prediction service failed' });
-    }
-
-    if (
-      !predictionResponse ||
-      typeof predictionResponse !== 'object' ||
-      Object.keys(predictionResponse).length === 0
-    ) {
-      console.error('Invalid or empty prediction response:', predictionResponse);
-      return res.status(500).json({ error: 'Invalid response from prediction service' });
-    }
-
-    // Find best model prediction
-    let bestModel = Object.keys(predictionResponse)[0];
-    let highestPercentage = predictionResponse[bestModel].precentage;
-    let finalPrediction = predictionResponse[bestModel].prediction;
-
-    for (const model of Object.keys(predictionResponse)) {
-      if (predictionResponse[model].precentage > highestPercentage) {
-        bestModel = model;
-        highestPercentage = predictionResponse[model].precentage;
-        finalPrediction = predictionResponse[model].prediction;
+      predictionResponse = await retry(
+        () => appService.callPythonService(enrichedData),
+        {
+          retries: 2,
+          minTimeout: 1000,
+          factor: 2
+        }
+      );
+      
+      if (!predictionResponse || Object.keys(predictionResponse).length === 0) {
+        throw new Error('Empty prediction response');
       }
+    } catch (pyError) {
+      console.error('Prediction service failed after retries:', pyError);
+      return res.status(503).json({
+        error: 'Prediction service unavailable',
+        code: 'SERVICE_UNAVAILABLE',
+        retryAfter: 60 // seconds
+      });
     }
 
-    // Get risk level info
+    // Process prediction results
+    const { bestModel, highestPercentage, finalPrediction } = processPredictionResults(predictionResponse);
     const { riskLevel, recommendation } = getRiskLevel(highestPercentage);
 
-    // Add prediction results to patient data
-    patientData.prediction = finalPrediction;
-    patientData.precentage = highestPercentage;
-    patientData.riskLevel = riskLevel;
-    patientData.recommendation = recommendation;
-
-    console.log('Patient data before saving:', patientData);
-
-    // Save patient data to DB, catch DB errors
-    let patient;
-    try {
-      patient = await appService.createPatient(patientData);
-    } catch (dbError) {
-      console.error('Database error creating patient:', dbError);
-      return res.status(500).json({ error: 'Failed to save patient data' });
-    }
-
-    // Create notification
-    const notificationMessage = `Patient ${patient.name} has a ${patient.riskLevel} risk level. Prediction: ${
-      patient.prediction ? 'Diabetic' : 'Not Diabetic'
-    }`;
-
-    let notification;
-    try {
-      notification = await prisma.notification.create({
+    // Create database transaction for atomic operations
+    const [patient, notification] = await prisma.$transaction([
+      prisma.patient.create({
         data: {
-          patientId: patient.Id,
-          message: notificationMessage,
-          isRead: false,
-        },
-      });
-    } catch (notifError) {
-      console.error('Notification creation error:', notifError);
-      // Not critical enough to fail whole request
-    }
-
-    // Send email notification
-    try {
-      await sendEmailNotification(user.email, patient.name, patient.riskLevel, patient.prediction);
-    } catch (emailError) {
-      console.error('Email sending failed:', emailError);
-      // Not critical enough to fail whole request
-    }
-
-    // Return success response
-    return res.status(200).json({
-      prediction: patient.prediction,
-      precentage: patient.precentage,
-      riskLevel: patient.riskLevel,
-      recommendation: patient.recommendation,
-      notification,
+          ...enrichedData,
+          prediction: finalPrediction,
+          confidence: highestPercentage,
+          riskLevel,
+          recommendation,
+          modelUsed: bestModel
+        }
+      }),
+      prisma.notification.create({
+        data: {
+          userId,
+          message: `New prediction for ${user.name}: ${riskLevel} risk`,
+          type: 'PREDICTION_RESULT'
+        }
+      })
+    ]).catch(async (txError) => {
+      console.error('Transaction failed:', txError);
+      throw new Error('Failed to save prediction results');
     });
+
+    // Async email notification (fire-and-forget)
+    sendEmailNotification({
+      to: user.email,
+      subject: `Prediction Results for ${patient.name}`,
+      template: 'prediction-result',
+      data: {
+        name: patient.name,
+        prediction: finalPrediction,
+        confidence: highestPercentage,
+        riskLevel,
+        recommendation
+      }
+    }).catch(emailError => {
+      console.error('Email failed silently:', emailError);
+    });
+
+    // Calculate response time
+    const elapsedTime = process.hrtime(startTime);
+    const responseTimeMs = elapsedTime[0] * 1000 + elapsedTime[1] / 1e6;
+
+    return res.status(200).json({
+      success: true,
+      prediction: finalPrediction,
+      confidence: highestPercentage,
+      riskLevel,
+      recommendation,
+      modelUsed: bestModel,
+      responseTime: `${responseTimeMs.toFixed(2)}ms`
+    });
+
   } catch (error) {
-    console.error('Unexpected error in predict:', error.stack || error);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('Prediction pipeline failed:', {
+      error: error.stack || error.message,
+      userId: req.user?.userId,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.status(500).json({
+      error: 'Internal prediction error',
+      code: 'INTERNAL_ERROR',
+      reference: `ERR-${Date.now()}`
+    });
   }
 };
+
+// Helper function to process prediction results
+function processPredictionResults(predictionResponse) {
+  let bestModel = Object.keys(predictionResponse)[0];
+  let highestPercentage = predictionResponse[bestModel].percentage;
+  let finalPrediction = predictionResponse[bestModel].prediction;
+
+  for (const [model, data] of Object.entries(predictionResponse)) {
+    if (data.percentage > highestPercentage) {
+      bestModel = model;
+      highestPercentage = data.percentage;
+      finalPrediction = data.prediction;
+    }
+  }
+
+  return { bestModel, highestPercentage, finalPrediction };
+}
+
+// Retry utility function
+function retry(fn, options = { retries: 3, minTimeout: 1000 }) {
+  return new Promise((resolve, reject) => {
+    const attempt = (retryCount) => {
+      fn()
+        .then(resolve)
+        .catch((err) => {
+          if (retryCount >= options.retries) {
+            return reject(err);
+          }
+          const timeout = options.minTimeout * Math.pow(options.factor || 2, retryCount);
+          setTimeout(() => attempt(retryCount + 1), timeout);
+        });
+    };
+    attempt(0);
+  });
+}
 
 // 🟢 Fetch all patients for the authenticated user
 
