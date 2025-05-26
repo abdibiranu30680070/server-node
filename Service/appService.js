@@ -58,31 +58,48 @@ async function getAllPatients() {
  * @param {Object} patientData - Patient's data.
  * @returns {Promise<Object>} - The created patient record.
  */
-async function createPatient(patientData) {
+// In your appService.js or controller
+const createPatient = async (patientData) => {
   if (!patientData || !patientData.userId) {
-    console.error("❌ Missing patient data or user ID.");
-    throw new Error("Patient data and userId are required.");
+    throw new Error("Patient data and userId are required");
+  }
+
+  // Ensure required fields are present
+  const requiredFields = ['name', 'Age', 'Glucose'];
+  for (const field of requiredFields) {
+    if (patientData[field] === undefined) {
+      throw new Error(`Missing required field: ${field}`);
+    }
   }
 
   try {
     return await prisma.patient.create({
       data: {
-        Pregnancies: Number(patientData.Pregnancies),
-        Glucose: Number(patientData.Glucose),
-        BloodPressure: Number(patientData.BloodPressure),
-        SkinThickness: Number(patientData.SkinThickness),
-        Insulin: Number(patientData.Insulin),
-        BMI: Number(patientData.BMI),
-        DiabetesPedigreeFunction: Number(patientData.DiabetesPedigreeFunction),
-        Age: Number(patientData.Age),
-        userId: patientData.userId,
-      },
+        name: patientData.name || 'Unknown Patient', // Default value
+        Age: patientData.Age,
+        BMI: patientData.BMI || 0, // Default value
+        Insulin: patientData.Insulin || 0,
+        Pregnancies: patientData.Pregnancies || 0,
+        Glucose: patientData.Glucose,
+        BloodPressure: patientData.BloodPressure || 0,
+        SkinThickness: patientData.SkinThickness || 0,
+        DiabetesPedigreeFunction: patientData.DiabetesPedigreeFunction || 0,
+        prediction: patientData.prediction || false,
+        precentage: patientData.precentage || 0,
+        riskLevel: patientData.riskLevel || 'Low',
+        recommendation: patientData.recommendation || 'No recommendation',
+        userId: patientData.userId
+      }
     });
   } catch (error) {
-    console.error("❌ Error creating patient:", error.message);
-    throw new Error("Failed to create patient.");
+    console.error('Error creating patient:', {
+      error: error.message,
+      stack: error.stack,
+      patientData: sanitizePatientData(patientData) // Remove sensitive info
+    });
+    throw new Error("Failed to create patient record");
   }
-}
+};
 
 /**
  * Calls the Python Flask API to predict diabetes.
